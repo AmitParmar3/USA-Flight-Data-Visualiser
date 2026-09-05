@@ -44,3 +44,22 @@ def validate_flight_data(df: pd.DataFrame) -> dict:
     ).sum()
 
     return checks
+
+
+def validation_summary(checks: dict) -> pd.DataFrame:
+
+# Convert validation results into a readable table.
+
+    results = pd.DataFrame(
+        [
+            {
+                "CHECK": check,
+                "VALUE": value,
+                "STATUS": "PASS" if value == 0 else "REVIEW"
+            }
+            for check, value in checks.items()
+            if check != "row_count"
+        ]
+    )
+
+    return results
