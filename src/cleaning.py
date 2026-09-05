@@ -1,17 +1,12 @@
 import pandas as pd
-import numpy as np
 
 def clean_bts_flight_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Cleans the BTS flight data DataFrame by performing the following operations:
-    - Removes rows with missing values in critical columns.
-    - Converts date columns to datetime format.
-    - Standardizes column names to lowercase.
-    - Removes duplicate rows.
+   Cleaning the BTS data
 
    """
     
-    df = df.copy();
+    df = df.copy()
 
     # Column Names
     df.columns = (
@@ -26,6 +21,8 @@ def clean_bts_flight_data(df: pd.DataFrame) -> pd.DataFrame:
         df["FL_DATE"],
         errors="coerce"
     )
+
+    #Dates
 
     df["YEAR"] = df["FL_DATE"].dt.year
     df["MONTH"] = df["FL_DATE"].dt.month
