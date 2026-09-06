@@ -87,12 +87,10 @@ def generate_candidate_connections(
     if valid_df.empty:
         return pd.DataFrame()
 
-    min_delta = pd.Timedelta(minutes=min_connection_min)
-    max_delta = pd.Timedelta(minutes=max_connection_min)
+    min_delta = np.timedelta64(min_connection_min, "m")
+    max_delta = np.timedelta64(max_connection_min, "m")
 
-    # Group flights by connection airport to avoid N x N global join
-    # Inbound flights arrive at 'destination' (which is the connection airport)
-    # Outbound flights depart from 'origin' (which is the connection airport)
+    # Group by airport (inbound arrives at destination, outbound departs from origin)
     inbound_by_airport = dict(list(valid_df.groupby("destination")))
     outbound_by_airport = dict(list(valid_df.groupby("origin")))
 
@@ -100,97 +98,123 @@ def generate_candidate_connections(
         set(outbound_by_airport.keys())
     )
 
-    candidate_records = []
+    airport_dfs = []
 
     for airport in common_airports:
-        inbound_group = inbound_by_airport[airport]
-        outbound_group = outbound_by_airport[airport].sort_values(
-            "scheduled_departure_utc"
+        inbound_k = inbound_by_airport[airport].reset_index(drop=True)
+        outbound_k = (
+            outbound_by_airport[airport]
+            .sort_values("scheduled_departure_utc")
+            .reset_index(drop=True)
         )
 
-        outbound_dep_utc_values = outbound_group["scheduled_departure_utc"].values
+        arr_utc_values = inbound_k["scheduled_arrival_utc"].values
+        dep_utc_values = outbound_k["scheduled_departure_utc"].values
 
-        for _, in_row in inbound_group.iterrows():
-            arr_utc = in_row["scheduled_arrival_utc"]
-            if pd.isna(arr_utc):
-                continue
+        min_times = arr_utc_values + min_delta
+        max_times = arr_utc_values + max_delta
 
-            min_time = (arr_utc + min_delta).to_datetime64()
-            max_time = (arr_utc + max_delta).to_datetime64()
+        # Fast vectorized binary search for range indices per inbound flight
+        left_idx = np.searchsorted(dep_utc_values, min_times, side="left")
+        right_idx = np.searchsorted(dep_utc_values, max_times, side="right")
 
-            # Binary search range for feasible outbound flights
-            left_idx = np.searchsorted(outbound_dep_utc_values, min_time, side="left")
-            right_idx = np.searchsorted(outbound_dep_utc_values, max_time, side="right")
+        counts = right_idx - left_idx
+        valid_mask = counts > 0
+        if not valid_mask.any():
+            continue
 
-            if left_idx >= right_idx:
-                continue
+        matching_inbound_idx = np.where(valid_mask)[0]
+        matching_counts = counts[valid_mask]
 
-            feasible_outbound = outbound_group.iloc[left_idx:right_idx]
+        # Vectorized index expansion
+        inbound_rep_idx = np.repeat(matching_inbound_idx, matching_counts)
+        outbound_matched_idx = np.concatenate(
+            [
+                np.arange(l, r)
+                for l, r in zip(left_idx[valid_mask], right_idx[valid_mask])
+            ]
+        )
 
-            for _, out_row in feasible_outbound.iterrows():
-                # Prevent self-pairing (same flight_id)
-                if in_row["flight_id"] == out_row["flight_id"]:
-                    continue
+        in_ids = inbound_k["flight_id"].values[inbound_rep_idx]
+        out_ids = outbound_k["flight_id"].values[outbound_matched_idx]
 
-                # Filter circular connection (origin == destination) if not allowed
-                if not allow_circular and in_row["origin"] == out_row["destination"]:
-                    continue
+        in_origs = inbound_k["origin"].values[inbound_rep_idx]
+        out_dests = outbound_k["destination"].values[outbound_matched_idx]
 
-                # Carrier filter
-                is_same_carrier = in_row["carrier"] == out_row["carrier"]
-                if same_carrier_only and not is_same_carrier:
-                    continue
+        in_carrs = inbound_k["carrier"].values[inbound_rep_idx]
+        out_carrs = outbound_k["carrier"].values[outbound_matched_idx]
 
-                # Calculate scheduled connection time in minutes
-                sched_dep_utc = out_row["scheduled_departure_utc"]
-                sched_conn_time = (
-                    sched_dep_utc - arr_utc
-                ).total_seconds() / 60.0
+        # Vectorized business rule filtering
+        mask = in_ids != out_ids
+        if not allow_circular:
+            mask = mask & (in_origs != out_dests)
+        if same_carrier_only:
+            mask = mask & (in_carrs == out_carrs)
 
-                # Calculate actual connection time if actual timestamps exist
-                act_conn_time = np.nan
-                if (
-                    "actual_arrival_utc" in in_row
-                    and "actual_departure_utc" in out_row
-                    and pd.notna(in_row["actual_arrival_utc"])
-                    and pd.notna(out_row["actual_departure_utc"])
-                ):
-                    act_conn_time = (
-                        out_row["actual_departure_utc"] - in_row["actual_arrival_utc"]
-                    ).total_seconds() / 60.0
+        if not mask.any():
+            continue
 
-                rec = {
-                    "inbound_flight_id": in_row["flight_id"],
-                    "outbound_flight_id": out_row["flight_id"],
-                    "inbound_carrier": in_row["carrier"],
-                    "outbound_carrier": out_row["carrier"],
-                    "is_same_carrier": is_same_carrier,
-                    "origin": in_row["origin"],
-                    "connection_airport": airport,
-                    "destination": out_row["destination"],
-                    "connection_route": f"{in_row['origin']}-{airport}-{out_row['destination']}",
-                    "inbound_scheduled_departure_utc": in_row.get("scheduled_departure_utc"),
-                    "inbound_scheduled_arrival_utc": arr_utc,
-                    "inbound_actual_departure_utc": in_row.get("actual_departure_utc"),
-                    "inbound_actual_arrival_utc": in_row.get("actual_arrival_utc"),
-                    "inbound_departure_delay_min": in_row.get("departure_delay_min"),
-                    "inbound_arrival_delay_min": in_row.get("arrival_delay_min"),
-                    "outbound_scheduled_departure_utc": sched_dep_utc,
-                    "outbound_scheduled_arrival_utc": out_row.get("scheduled_arrival_utc"),
-                    "outbound_actual_departure_utc": out_row.get("actual_departure_utc"),
-                    "outbound_actual_arrival_utc": out_row.get("actual_arrival_utc"),
-                    "outbound_departure_delay_min": out_row.get("departure_delay_min"),
-                    "outbound_arrival_delay_min": out_row.get("arrival_delay_min"),
-                    "scheduled_connection_time_min": sched_conn_time,
-                    "actual_connection_time_min": act_conn_time,
-                    "connection_buffer_min": sched_conn_time - min_connection_min,
-                }
-                candidate_records.append(rec)
+        final_in = inbound_rep_idx[mask]
+        final_out = outbound_matched_idx[mask]
 
-    if not candidate_records:
+        sub_in = inbound_k.iloc[final_in].reset_index(drop=True)
+        sub_out = outbound_k.iloc[final_out].reset_index(drop=True)
+
+        sched_conn = (
+            sub_out["scheduled_departure_utc"] - sub_in["scheduled_arrival_utc"]
+        ).dt.total_seconds() / 60.0
+
+        act_conn = np.nan
+        if (
+            "actual_arrival_utc" in sub_in.columns
+            and "actual_departure_utc" in sub_out.columns
+        ):
+            act_conn = (
+                sub_out["actual_departure_utc"] - sub_in["actual_arrival_utc"]
+            ).dt.total_seconds() / 60.0
+
+        conn_df = pd.DataFrame(
+            {
+                "inbound_flight_id": sub_in["flight_id"],
+                "outbound_flight_id": sub_out["flight_id"],
+                "inbound_carrier": sub_in["carrier"],
+                "outbound_carrier": sub_out["carrier"],
+                "is_same_carrier": sub_in["carrier"] == sub_out["carrier"],
+                "origin": sub_in["origin"],
+                "connection_airport": airport,
+                "destination": sub_out["destination"],
+                "connection_route": sub_in["origin"]
+                + "-"
+                + airport
+                + "-"
+                + sub_out["destination"],
+                "inbound_scheduled_departure_utc": sub_in["scheduled_departure_utc"],
+                "inbound_scheduled_arrival_utc": sub_in["scheduled_arrival_utc"],
+                "inbound_actual_departure_utc": sub_in.get("actual_departure_utc"),
+                "inbound_actual_arrival_utc": sub_in.get("actual_arrival_utc"),
+                "inbound_departure_delay_min": sub_in.get("departure_delay_min"),
+                "inbound_arrival_delay_min": sub_in.get("arrival_delay_min"),
+                "outbound_scheduled_departure_utc": sub_out[
+                    "scheduled_departure_utc"
+                ],
+                "outbound_scheduled_arrival_utc": sub_out.get(
+                    "scheduled_arrival_utc"
+                ),
+                "outbound_actual_departure_utc": sub_out.get("actual_departure_utc"),
+                "outbound_actual_arrival_utc": sub_out.get("actual_arrival_utc"),
+                "outbound_departure_delay_min": sub_out.get("departure_delay_min"),
+                "outbound_arrival_delay_min": sub_out.get("arrival_delay_min"),
+                "scheduled_connection_time_min": sched_conn,
+                "actual_connection_time_min": act_conn,
+                "connection_buffer_min": sched_conn - min_connection_min,
+            }
+        )
+        airport_dfs.append(conn_df)
+
+    if not airport_dfs:
         return pd.DataFrame()
 
-    connections_df = pd.DataFrame(candidate_records)
+    connections_df = pd.concat(airport_dfs, ignore_index=True)
     return connections_df
 
 
@@ -225,25 +249,33 @@ def validate_candidate_connections(
 
     checks["total_connections"] = len(connections_df)
 
-    checks["duplicate_pairings"] = connections_df.duplicated(
-        subset=["inbound_flight_id", "outbound_flight_id"]
-    ).sum()
+    checks["duplicate_pairings"] = int(
+        connections_df.duplicated(
+            subset=["inbound_flight_id", "outbound_flight_id"]
+        ).sum()
+    )
 
-    checks["self_connections"] = (
-        connections_df["inbound_flight_id"] == connections_df["outbound_flight_id"]
-    ).sum()
+    checks["self_connections"] = int(
+        (
+            connections_df["inbound_flight_id"]
+            == connections_df["outbound_flight_id"]
+        ).sum()
+    )
 
-    checks["under_min_time_violations"] = (
-        connections_df["scheduled_connection_time_min"] < min_connection_min
-    ).sum()
+    checks["under_min_time_violations"] = int(
+        (
+            connections_df["scheduled_connection_time_min"] < min_connection_min
+        ).sum()
+    )
 
-    checks["over_max_time_violations"] = (
-        connections_df["scheduled_connection_time_min"] > max_connection_min
-    ).sum()
+    checks["over_max_time_violations"] = int(
+        (
+            connections_df["scheduled_connection_time_min"] > max_connection_min
+        ).sum()
+    )
 
-    checks["circular_connections"] = (
-        connections_df["origin"] == connections_df["destination"]
-    ).sum()
+    checks["circular_connections"] = int(
+        (connections_df["origin"] == connections_df["destination"]).sum()
+    )
 
     return checks
-

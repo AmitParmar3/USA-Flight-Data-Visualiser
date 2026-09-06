@@ -14,11 +14,11 @@ class TestConnectionGenerator(unittest.TestCase):
 
     def setUp(self):
         # Create sample Fact_Flight_Operation dataframe
-        # Flight A: JFK -> ORD, arrives 2025-01-01 12:00 UTC
-        # Flight B: ORD -> LAX, departs 2025-01-01 13:00 UTC (60 min connection - FEASIBLE)
-        # Flight C: ORD -> SFO, departs 2025-01-01 12:30 UTC (30 min connection - TOO SHORT)
-        # Flight D: ORD -> SEA, departs 2025-01-01 17:00 UTC (300 min connection - TOO LONG)
-        # Flight E: ORD -> JFK, departs 2025-01-01 13:30 UTC (90 min connection - CIRCULAR JFK-ORD-JFK)
+        # Flight A: JFK -> ORD, arrives 2025-01-01 12:00 UTC (Carrier AA)
+        # Flight B: ORD -> LAX, departs 2025-01-01 13:00 UTC (60 min connection - FEASIBLE, Carrier AA)
+        # Flight C: ORD -> SFO, departs 2025-01-01 12:30 UTC (30 min connection - TOO SHORT < 45 min, Carrier UA)
+        # Flight D: ORD -> SEA, departs 2025-01-01 17:00 UTC (300 min connection - TOO LONG > 240 min, Carrier DL)
+        # Flight E: ORD -> JFK, departs 2025-01-01 13:30 UTC (90 min connection - CIRCULAR JFK-ORD-JFK, Carrier AA)
 
         data = [
             {
@@ -104,48 +104,80 @@ class TestConnectionGenerator(unittest.TestCase):
         ]
         self.fact_df = pd.DataFrame(data)
 
-    def test_candidate_generation_default_bounds(self):
-        # Min 45 min, Max 240 min
+    def test_lower_bound_45_min(self):
+        # 30-minute connection (Flight C) must be excluded under 45-min lower bound
+        conn = generate_candidate_connections(
+            self.fact_df,
+            min_connection_min=45,
+            max_connection_min=240,
+        )
+        outbound_ids = set(conn["outbound_flight_id"])
+        self.assertNotIn("20250101_UA_300_ORD_SFO", outbound_ids)
+
+    def test_upper_bound_240_min(self):
+        # 300-minute connection (Flight D) must be excluded under 240-min upper bound
+        conn = generate_candidate_connections(
+            self.fact_df,
+            min_connection_min=45,
+            max_connection_min=240,
+        )
+        outbound_ids = set(conn["outbound_flight_id"])
+        self.assertNotIn("20250101_DL_400_ORD_SEA", outbound_ids)
+
+    def test_no_duplicate_flight_pairs(self):
+        conn = generate_candidate_connections(
+            self.fact_df,
+            min_connection_min=45,
+            max_connection_min=240,
+        )
+        duplicated = conn.duplicated(subset=["inbound_flight_id", "outbound_flight_id"]).sum()
+        self.assertEqual(duplicated, 0)
+
+    def test_no_self_pairing(self):
+        conn = generate_candidate_connections(
+            self.fact_df,
+            min_connection_min=45,
+            max_connection_min=240,
+        )
+        self_pairs = (conn["inbound_flight_id"] == conn["outbound_flight_id"]).sum()
+        self.assertEqual(self_pairs, 0)
+
+    def test_no_circular_connection_by_default(self):
+        # Flight E is ORD->JFK which makes JFK->ORD->JFK circular
         conn = generate_candidate_connections(
             self.fact_df,
             min_connection_min=45,
             max_connection_min=240,
             allow_circular=False,
         )
+        circular = (conn["origin"] == conn["destination"]).sum()
+        self.assertEqual(circular, 0)
+        self.assertNotIn("20250101_AA_500_ORD_JFK", set(conn["outbound_flight_id"]))
 
-        # Expected connection: Flight A -> Flight B (JFK-ORD-LAX, 60 min)
-        # Flight C is 30 min (too short < 45)
-        # Flight D is 300 min (too long > 240)
-        # Flight E is circular JFK-ORD-JFK (allow_circular=False)
+    def test_same_carrier_filtering(self):
+        # Flight B is AA (same carrier as Flight A), Flight C is UA (different carrier)
+        conn_same = generate_candidate_connections(
+            self.fact_df,
+            min_connection_min=15,  # Allow 30-min to include UA if enabled
+            max_connection_min=240,
+            same_carrier_only=True,
+        )
+        # All returned connections must be is_same_carrier == True
+        self.assertTrue(conn_same["is_same_carrier"].all())
+        self.assertNotIn("20250101_UA_300_ORD_SFO", set(conn_same["outbound_flight_id"]))
+
+    def test_correct_scheduled_connection_time_and_airport(self):
+        conn = generate_candidate_connections(
+            self.fact_df,
+            min_connection_min=45,
+            max_connection_min=240,
+        )
         self.assertEqual(len(conn), 1)
-        self.assertEqual(conn.iloc[0]["inbound_flight_id"], "20250101_AA_100_JFK_ORD")
-        self.assertEqual(conn.iloc[0]["outbound_flight_id"], "20250101_AA_200_ORD_LAX")
-        self.assertEqual(conn.iloc[0]["connection_airport"], "ORD")
-        self.assertEqual(conn.iloc[0]["scheduled_connection_time_min"], 60.0)
-
-    def test_allow_circular_connections(self):
-        conn = generate_candidate_connections(
-            self.fact_df,
-            min_connection_min=45,
-            max_connection_min=240,
-            allow_circular=True,
-        )
-        # Should include JFK-ORD-LAX and JFK-ORD-JFK
-        self.assertEqual(len(conn), 2)
-        destinations = set(conn["destination"])
-        self.assertIn("LAX", destinations)
-        self.assertIn("JFK", destinations)
-
-    def test_custom_connection_bounds(self):
-        # Min 15 min, Max 360 min
-        conn = generate_candidate_connections(
-            self.fact_df,
-            min_connection_min=15,
-            max_connection_min=360,
-            allow_circular=False,
-        )
-        # Includes Flight B (60 min), Flight C (30 min), Flight D (300 min)
-        self.assertEqual(len(conn), 3)
+        row = conn.iloc[0]
+        self.assertEqual(row["connection_airport"], "ORD")
+        self.assertEqual(row["scheduled_connection_time_min"], 60.0)
+        self.assertEqual(row["inbound_flight_id"], "20250101_AA_100_JFK_ORD")
+        self.assertEqual(row["outbound_flight_id"], "20250101_AA_200_ORD_LAX")
 
     def test_validation_function(self):
         conn = generate_candidate_connections(
@@ -159,6 +191,7 @@ class TestConnectionGenerator(unittest.TestCase):
         self.assertEqual(checks["self_connections"], 0)
         self.assertEqual(checks["under_min_time_violations"], 0)
         self.assertEqual(checks["over_max_time_violations"], 0)
+        self.assertEqual(checks["circular_connections"], 0)
 
     def test_missing_schema_error(self):
         invalid_df = pd.DataFrame({"dummy": [1, 2, 3]})
@@ -179,4 +212,3 @@ class TestConnectionGenerator(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
