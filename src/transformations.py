@@ -205,6 +205,18 @@ def create_flight_fact_table(df: pd.DataFrame) -> pd.DataFrame:
     fact["destination"] = df["DEST"]
     fact["route"] = df["ROUTE"]
 
+    fact["scheduled_departure_utc"] = df["SCHEDULED_DEPARTURE_UTC"]
+    fact["scheduled_arrival_utc"] = df["SCHEDULED_ARRIVAL_UTC"]
+
+    fact["actual_departure_utc"] = df["ACTUAL_DEPARTURE_UTC"]
+    fact["actual_arrival_utc"] = df["ACTUAL_ARRIVAL_UTC"]
+
+    fact["scheduled_departure_local"] = df["SCHEDULED_DEPARTURE_LOCAL"]
+    fact["scheduled_arrival_local"] = df["SCHEDULED_ARRIVAL_LOCAL"]
+
+    fact["actual_departure_local"] = df["ACTUAL_DEPARTURE_LOCAL"]
+    fact["actual_arrival_local"] = df["ACTUAL_ARRIVAL_LOCAL"]
+
     fact["flight_id"] = (
         fact["flight_date"].dt.strftime("%Y%m%d")
         + "_"
@@ -225,6 +237,11 @@ def create_flight_fact_table(df: pd.DataFrame) -> pd.DataFrame:
     fact["scheduled_duration_min"] = df["CRS_ELAPSED_TIME"]
     fact["actual_duration_min"] = df["ACTUAL_ELAPSED_TIME"]
 
+    fact["duration_deviation_min"] = (
+        df["ACTUAL_ELAPSED_TIME"]
+        - df["CRS_ELAPSED_TIME"]
+    )
+
     fact["air_time_min"] = df["AIR_TIME"]
     fact["taxi_out_min"] = df["TAXI_OUT"]
     fact["taxi_in_min"] = df["TAXI_IN"]
@@ -235,6 +252,22 @@ def create_flight_fact_table(df: pd.DataFrame) -> pd.DataFrame:
     fact["departure_delayed_15"] = df["DEP_DEL15"]
     fact["arrival_delayed_15"] = df["ARR_DEL15"]
 
+    fact["departure_severe_60"] = (
+        df["DEP_DELAY"] >= 60
+    ).astype("Int64")
+
+    fact["arrival_severe_60"] = (
+        df["ARR_DELAY"] >= 60
+    ).astype("Int64")
+
+    fact["departure_severe_120"] = (
+        df["DEP_DELAY"] >= 120
+    ).astype("Int64")
+
+    fact["arrival_severe_120"] = (
+        df["ARR_DELAY"] >= 120
+    ).astype("Int64")
+
     fact["departure_delay_category"] = df["DEP_DELAY_CATEGORY"]
     fact["arrival_delay_category"] = df["ARR_DELAY_CATEGORY"]
 
@@ -243,6 +276,13 @@ def create_flight_fact_table(df: pd.DataFrame) -> pd.DataFrame:
     fact["nas_delay"] = df["NAS_DELAY"]
     fact["security_delay"] = df["SECURITY_DELAY"]
     fact["late_aircraft_delay"] = df["LATE_AIRCRAFT_DELAY"]
+
+    fact["delay_recovery_min"] = (
+        df["DEP_DELAY"]
+        - df["ARR_DELAY"]
+    )
+
+    
 
     fact["flight_status"] = df["FLIGHT_STATUS"]
     fact["is_completed"] = df["IS_COMPLETED"]
@@ -257,5 +297,7 @@ def create_flight_fact_table(df: pd.DataFrame) -> pd.DataFrame:
     fact["day_of_week"] = df["DAY_OF_WEEK"]
     fact["day_of_week_num"] = df["DAY_OF_WEEK_NUM"]
     fact["is_weekend"] = df["IS_WEEKEND"]
+
+    
 
     return fact
