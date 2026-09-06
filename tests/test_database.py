@@ -16,15 +16,27 @@ class TestDatabase(unittest.TestCase):
         cls.conn.close()
 
     def test_tableau_flight_performance_exists(self):
-        res = self.conn.execute("SELECT COUNT(*) FROM tableau_flight_performance").fetchone()
+        res = self.conn.execute("SELECT COUNT(*) FROM tableau_flight_performance WHERE record_type = 'Flight'").fetchone()
         self.assertIsNotNone(res)
         self.assertEqual(res[0], 539747)
         
-        unique = self.conn.execute("SELECT COUNT(DISTINCT flight_id) FROM tableau_flight_performance").fetchone()
+        unique = self.conn.execute("SELECT COUNT(DISTINCT flight_id) FROM tableau_flight_performance WHERE flight_id IS NOT NULL").fetchone()
         self.assertEqual(unique[0], 539747)
         
+        # Test airport rows exist
+        airports = self.conn.execute("SELECT COUNT(*) FROM tableau_flight_performance WHERE record_type = 'Airport'").fetchone()
+        self.assertGreater(airports[0], 100)
+        
+        # Test carrier rows exist
+        carriers = self.conn.execute("SELECT COUNT(*) FROM tableau_flight_performance WHERE record_type = 'Carrier'").fetchone()
+        self.assertGreater(carriers[0], 5)
+        
+        # Test route rows exist
+        routes = self.conn.execute("SELECT COUNT(*) FROM tableau_flight_performance WHERE record_type = 'Route'").fetchone()
+        self.assertGreater(routes[0], 1000)
+        
         columns = [c[0] for c in self.conn.execute("DESCRIBE tableau_flight_performance").fetchall()]
-        required = ["flight_id", "carrier", "origin", "destination", "scheduled_departure_utc", "departure_delay_min"]
+        required = ["flight_id", "Carrier", "Origin", "Destination", "Airport", "Airport Flight Volume", "Arrival Delay Rate"]
         for r in required:
             self.assertIn(r, columns)
 

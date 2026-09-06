@@ -9,21 +9,20 @@ This document outlines the Semantic Layer designed for Tableau, built on top of 
 
 ## 1. tableau_flight_performance
 **Purpose:** Powers Dashboards 1-4 (Network Overview, Carrier Performance, Airport Reliability, Route Analysis).
-*Note: This view has exactly one row per flight (539,747 rows). Aggregate calculations (e.g., flight volume, cancellation rates, average delay) should be performed natively in Tableau.*
+*Note: This view employs a **Polymorphic Grain** (Flight, Airport, Carrier, Route) via UNION ALL. This allows Tableau to query independent, mathematically correct pre-aggregations without duplicating flight rows or incorrectly merging origins/destinations. Filter by `record_type` when necessary.*
 
 | Field Name | Source | Interpretation |
 | :--- | :--- | :--- |
-| `flight_id` | `flights` | Unique identifier for each flight. |
-| `flight_date` | `flights` | Date of the flight. |
-| `carrier` | `flights` | Operating carrier. |
-| `flight_number` | `flights` | Flight number. |
-| `origin` | `flights` | Origin airport. |
-| `destination` | `flights` | Destination airport. |
-| `route` | `flights` | Origin-Destination pair (e.g., JFK-LAX). |
-| `is_cancelled` | `flights` | True if flight was cancelled. |
-| `departure_delay_min` | `flights` | Minutes delayed on departure. |
-| `arrival_delay_min` | `flights` | Minutes delayed on arrival (positive = late, negative = early). |
-| `delay_recovery_min` | `flights` | Time recovered in air. |
+| `record_type` | `UNION` | 'Flight', 'Airport', 'Carrier', or 'Route'. |
+| `flight_id` | `flights` | Unique identifier (Populated only for 'Flight' rows). |
+| `Airport` | `UNION` | Consolidated airport (Populated only for 'Airport' rows). |
+| `Carrier` | `UNION` | Carrier (Populated for 'Flight' and 'Carrier' rows). |
+| `Origin` / `Destination` | `flights` | Populated for 'Flight' and 'Route' rows. |
+| `Airport Flight Volume` | `airport_agg` | Total departures + arrivals. |
+| `Arrival Delay Rate` | `UNION` | Shared metric name used by Airport and Carrier domains. |
+| `Outbound Network Connectivity` | `airport_agg` | Distinct destinations served from an airport. |
+| `Carrier Flight Volume` | `carrier_agg` | Total flights operated by a carrier. |
+| `Route Frequency` | `route_agg` | Total flights on a specific O-D pair. |
 
 ---
 
