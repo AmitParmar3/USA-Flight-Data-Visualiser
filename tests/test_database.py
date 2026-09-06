@@ -15,35 +15,63 @@ class TestDatabase(unittest.TestCase):
     def tearDownClass(cls):
         cls.conn.close()
 
-    def test_database_exists(self):
-        self.assertTrue(os.path.exists(self.db_path))
-
-    def test_flight_fact_view_exists(self):
-        res = self.conn.execute("SELECT COUNT(*) FROM flights").fetchone()
+    def test_tableau_flight_performance_exists(self):
+        res = self.conn.execute("SELECT COUNT(*) FROM tableau_flight_performance").fetchone()
         self.assertIsNotNone(res)
-        self.assertGreater(res[0], 0)
-
-    def test_candidate_connections_view_exists(self):
-        res = self.conn.execute("SELECT COUNT(*) FROM candidate_connections").fetchone()
-        self.assertIsNotNone(res)
-        self.assertGreater(res[0], 0)
-
-    def test_connection_reliability_view_exists(self):
-        res = self.conn.execute("SELECT COUNT(*) FROM connection_reliability").fetchone()
-        self.assertIsNotNone(res)
-        self.assertGreater(res[0], 0)
+        self.assertEqual(res[0], 539747)
         
-    def test_itineraries_view_exists(self):
-        res = self.conn.execute("SELECT COUNT(*) FROM itineraries").fetchone()
-        self.assertIsNotNone(res)
-        self.assertGreater(res[0], 0)
+        unique = self.conn.execute("SELECT COUNT(DISTINCT flight_id) FROM tableau_flight_performance").fetchone()
+        self.assertEqual(unique[0], 539747)
+        
+        columns = [c[0] for c in self.conn.execute("DESCRIBE tableau_flight_performance").fetchall()]
+        required = ["flight_id", "carrier", "origin", "destination", "scheduled_departure_utc", "departure_delay_min"]
+        for r in required:
+            self.assertIn(r, columns)
 
-    def test_no_pandas_loading(self):
-        # By querying the view strictly within duckdb using .fetchone(),
-        # we prove that we can run COUNT(*) over millions of rows instantly
-        # without bringing them into memory.
-        res = self.conn.execute("SELECT COUNT(inbound_flight_id) FROM candidate_connections").fetchone()
-        self.assertGreater(res[0], 1000000) # Should be ~27M
+    def test_tableau_connection_reliability_exists(self):
+        res = self.conn.execute("SELECT COUNT(*) FROM tableau_connection_reliability").fetchone()
+        self.assertIsNotNone(res)
+        self.assertTrue(30000 < res[0] < 50000)
+        
+        columns = [c[0] for c in self.conn.execute("DESCRIBE tableau_connection_reliability").fetchall()]
+        required = ["connection_airport", "inbound_carrier", "outbound_carrier", "scheduled_buffer_bucket", "median_actual_buffer"]
+        for r in required:
+            self.assertIn(r, columns)
+
+    def test_tableau_itinerary_search_exists(self):
+        res = self.conn.execute("SELECT COUNT(*) FROM tableau_itinerary_search").fetchone()
+        self.assertIsNotNone(res)
+        self.assertEqual(res[0], 27118072)
+        
+        columns = [c[0] for c in self.conn.execute("DESCRIBE tableau_itinerary_search").fetchall()]
+        required = ["inbound_flight_id", "outbound_flight_id", "origin", "destination", "connection_airport", "total_scheduled_journey_time_min"]
+        for r in required:
+            self.assertIn(r, columns)
+            
+    def test_representative_filtered_query(self):
+        # Verify a filtered query runs successfully over the itinerary view
+        query = """
+            SELECT * FROM tableau_itinerary_search 
+            WHERE origin = 'JFK' AND destination = 'LAX'
+            ORDER BY total_scheduled_journey_time_min ASC
+            LIMIT 5
+        """
+        res = self.conn.execute(query).fetchall()
+        self.assertIsNotNone(res)
+        self.assertGreater(len(res), 0)
+        self.assertLessEqual(len(res), 5)
+        
+    def test_obsolete_views_removed(self):
+        obsolete_views = [
+            "tableau_airport_performance",
+            "tableau_carrier_performance",
+            "tableau_route_performance",
+            "tableau_itinerary_options"
+        ]
+        
+        tables = [row[0] for row in self.conn.execute("SELECT table_name FROM information_schema.tables").fetchall()]
+        for ov in obsolete_views:
+            self.assertNotIn(ov, tables)
 
 if __name__ == "__main__":
     unittest.main()
