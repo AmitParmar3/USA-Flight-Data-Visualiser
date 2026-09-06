@@ -210,5 +210,82 @@ class TestConnectionGenerator(unittest.TestCase):
         self.assertFalse(itin.empty)
 
 
+from src.connections.decision import rank_itineraries, calculate_itinerary_score
+
+class TestDecisionEngine(unittest.TestCase):
+    def setUp(self):
+        self.itinerary_df = pd.DataFrame([
+            {
+                "itinerary_id": 1,
+                "total_scheduled_journey_time_min": 200,
+                "scheduled_connection_time_min": 50,
+                "connection_buffer_min": 5,
+                "inbound_arrival_delay_min": 0,
+                "outbound_departure_delay_min": 0,
+                "connection_risk_band": "High",
+            },
+            {
+                "itinerary_id": 2,
+                "total_scheduled_journey_time_min": 300,
+                "scheduled_connection_time_min": 90,
+                "connection_buffer_min": 45,
+                "inbound_arrival_delay_min": 10,
+                "outbound_departure_delay_min": 0,
+                "connection_risk_band": "Low",
+            },
+            {
+                "itinerary_id": 3,
+                "total_scheduled_journey_time_min": 250,
+                "scheduled_connection_time_min": 45,
+                "connection_buffer_min": 0,
+                "inbound_arrival_delay_min": 20,
+                "outbound_departure_delay_min": 5,
+                "connection_risk_band": "Critical",
+            },
+            {
+                "itinerary_id": 4,
+                "total_scheduled_journey_time_min": 250,
+                "scheduled_connection_time_min": 60,
+                "connection_buffer_min": 15,
+                "inbound_arrival_delay_min": 0,
+                "outbound_departure_delay_min": 0,
+                "connection_risk_band": "Moderate",
+            }
+        ])
+
+    def test_fastest_ranking(self):
+        ranked = rank_itineraries(self.itinerary_df, objective="fastest", top_n=2)
+        self.assertEqual(len(ranked), 2)
+        self.assertEqual(ranked.iloc[0]["itinerary_id"], 1)
+
+    def test_reliability_ranking(self):
+        ranked = rank_itineraries(self.itinerary_df, objective="reliable", top_n=3)
+        self.assertEqual(ranked.iloc[0]["itinerary_id"], 2)
+
+    def test_risk_ranking(self):
+        ranked = rank_itineraries(self.itinerary_df, objective="risk", top_n=4)
+        self.assertEqual(ranked.iloc[0]["itinerary_id"], 2)
+        self.assertEqual(ranked.iloc[1]["itinerary_id"], 4)
+
+    def test_balanced_ranking(self):
+        ranked = rank_itineraries(self.itinerary_df, objective="balanced", top_n=4)
+        self.assertIn("ranking_score", ranked.columns)
+        self.assertTrue(pd.notna(ranked["ranking_score"].iloc[0]))
+        scores = ranked["ranking_score"].tolist()
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_invalid_objective(self):
+        with self.assertRaises(ValueError):
+            rank_itineraries(self.itinerary_df, objective="invalid")
+
+    def test_empty_input(self):
+        empty_df = pd.DataFrame(columns=self.itinerary_df.columns)
+        ranked = rank_itineraries(empty_df, objective="balanced")
+        self.assertTrue(ranked.empty)
+
+    def test_top_n_behavior(self):
+        ranked = rank_itineraries(self.itinerary_df, top_n=1)
+        self.assertEqual(len(ranked), 1)
+
 if __name__ == "__main__":
     unittest.main()
